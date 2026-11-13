@@ -1,4 +1,0 @@
-import requests
-def obtener_precios():
-if __name__ == "__main__"
-    print("esto es una prueba")
