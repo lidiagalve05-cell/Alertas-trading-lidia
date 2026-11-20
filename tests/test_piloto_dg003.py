@@ -211,3 +211,28 @@ class PilotoTest(unittest.TestCase):
         sin_corte_final = piloto.medir(INICIO, registros[:-1], "piloto")
         self.assertEqual(sin_corte_final["resultado"], "inconcluso")
         self.assertIsNone(sin_corte_final["integridad"][-1]["velas_faltantes"])
+
+    def test_disparo_desconocido_conserva_recepcion_y_arranque(self):
+        entrada = INICIO + timedelta(minutes=11)
+        recoger(INICIO, None, self.carpeta, reloj=lambda: entrada,
+                red=lambda url: (json.dumps(respuesta(url)).encode(), None))
+        publicado = self.leer()
+        primera = publicado[f"BTCUSDT|{(INICIO + PASO).isoformat()}"]
+        self.assertIsNone(primera["programado_utc"])
+        self.assertIsNone(primera["ejecucion_programada_posterior"])
+        self.assertTrue(primera["recepcion_fuera_de_plazo"])
+        self.assertEqual(primera["inicio_ejecucion_utc"], entrada.isoformat())
+        cuerpo = (self.carpeta / "publico/velas.json").read_bytes()
+        observar(INICIO, self.carpeta, PILOTO, reloj=lambda: entrada, red=lambda _: (cuerpo, None))
+        registros = piloto.evidencia(INICIO, self.carpeta, "piloto")
+        etapa = next(piloto.detalle(INICIO, registros, "piloto"))["etapas"]["BTCUSDT"]
+        self.assertIsNone(etapa["ejecucion_programada_posterior"])
+        self.assertTrue(etapa["primera_observacion_fuera_de_plazo"])
+
+    def test_sondeos_piden_recursos_con_identificadores_distintos(self):
+        with patch.object(piloto, "descargar", return_value=(b"{}", None)) as red:
+            piloto.descargar_observacion(PILOTO + "?origen=prueba")
+            piloto.descargar_observacion(PILOTO + "?origen=prueba")
+        primera, segunda = [parse_qs(urlsplit(c.args[0]).query) for c in red.call_args_list]
+        self.assertEqual(primera["origen"], ["prueba"])
+        self.assertNotEqual(primera["dg003_observacion"], segunda["dg003_observacion"])

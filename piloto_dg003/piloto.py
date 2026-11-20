@@ -13,6 +13,7 @@ from math import isfinite
 from pathlib import Path
 from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, urlopen
+from uuid import uuid4
 
 ACTIVOS = ("BTCUSDT", "ETHUSDT", "SOLUSDT")
 MINUTO = timedelta(minutes=1)
@@ -138,8 +139,9 @@ def publicar_pendientes(ruta, privado, estado, reloj):
 
 def recoger(inicio, programada, carpeta, reloj=ahora, red=descargar):
     entrada = reloj()
-    if programada > entrada:
+    if programada is not None and programada > entrada:
         raise ValueError("Disparo futuro respecto al reloj local")
+    marca_programada = programada.isoformat() if programada is not None else None
     disponibles = list(cierres(inicio, entrada - timedelta(seconds=30)))
     if not disponibles:
         return
@@ -179,12 +181,13 @@ def recoger(inicio, programada, carpeta, reloj=ahora, red=descargar):
                     clave = f"{activo}|{cierre.isoformat()}"
                     if clave in lote:
                         raise ValueError("Vela duplicada en la respuesta")
+                    posterior = programada >= cierre + PASO if programada is not None else None
                     lote[clave] = {
                         "activo": activo, "cierre_utc": cierre.isoformat(),
                         "ohlcv": validar(vela[1:6]), "recibido_utc": recibido.isoformat(),
-                        "programado_utc": programada.isoformat(), "inicio_ejecucion_utc": entrada.isoformat(),
-                        "recuperada": programada >= cierre + PASO,
-                        "ejecucion_programada_posterior": programada >= cierre + PASO,
+                        "programado_utc": marca_programada, "inicio_ejecucion_utc": entrada.isoformat(),
+                        "recuperada": posterior,
+                        "ejecucion_programada_posterior": posterior,
                         "recepcion_fuera_de_plazo": recibido > cierre + PASO,
                     }
                 if lote:
@@ -196,12 +199,12 @@ def recoger(inicio, programada, carpeta, reloj=ahora, red=descargar):
                         valor["persistido_utc"] = persistido.isoformat()
                     guardar(privado, {"inicio": inicio.isoformat(), "velas": lote})
                     estado = publicar_pendientes(ruta, privado, estado, reloj)
-                print(json.dumps({"activo": activo, "programado_utc": programada.isoformat(),
+                print(json.dumps({"activo": activo, "programado_utc": marca_programada,
                                   "inicio_ejecucion_utc": entrada.isoformat(), "recibido_utc": recibido.isoformat(),
                                   "publicacion_confirmada_utc": reloj().isoformat(), "filas": len(lote)}))
             except (OSError, ValueError, TypeError, IndexError, KeyError) as error:
                 print(json.dumps({"activo": activo, "error": type(error).__name__,
-                                  "programado_utc": programada.isoformat(), "utc": reloj().isoformat()}))
+                                  "programado_utc": marca_programada, "utc": reloj().isoformat()}))
         if any(f"{activo}|{c.isoformat()}" not in estado["velas"]
                for c in disponibles for activo in ACTIVOS):
             raise RuntimeError("Quedan velas pendientes; el siguiente ciclo reintentará")
@@ -253,7 +256,13 @@ def claves_piloto(cuerpo, inicio, observado=None):
     return claves
 
 
-def observar(inicio, carpeta, destino, reloj=ahora, red=descargar):
+def descargar_observacion(url):
+    partes = urlsplit(url)
+    consulta = "&".join(filter(None, (partes.query, f"dg003_observacion={uuid4().hex}")))
+    return descargar(partes._replace(query=consulta, fragment="").geturl())
+
+
+def observar(inicio, carpeta, destino, reloj=ahora, red=descargar_observacion):
     if reloj() < inicio:
         return
     carpeta.mkdir(parents=True, exist_ok=True)
@@ -276,7 +285,7 @@ def observar(inicio, carpeta, destino, reloj=ahora, red=descargar):
                           else claves_piloto(cuerpo, inicio, visto))
                 marcas = {
                     clave: {campo: fila[campo] for campo in
-                            ("programado_utc", "recibido_utc", "persistido_utc")
+                            ("programado_utc", "inicio_ejecucion_utc", "recibido_utc", "persistido_utc")
                             if campo in fila}
                     for clave, fila in datos.items()
                 }
@@ -346,7 +355,7 @@ def detalle(inicio, registros, fuente):
             registro = marcas.get((activo, texto), {})
             etapas[activo] = registro | {
                 "ejecucion_programada_posterior": (
-                    instante(registro["programado_utc"]) >= cierre + PASO if "programado_utc" in registro else None),
+                    instante(registro["programado_utc"]) >= cierre + PASO if registro.get("programado_utc") is not None else None),
                 "recepcion_fuera_de_plazo": (
                     instante(registro["recibido_utc"]) > cierre + PASO if "recibido_utc" in registro else None),
                 "primera_observacion_fuera_de_plazo": (
@@ -462,8 +471,8 @@ def main():
     if not args.inicio_utc <= ahora() <= args.inicio_utc + VENTANA + MARGEN_FINAL:
         parser.error("Fuera de la ventana de 48 horas y su margen final de 5 minutos")
     if args.modo == "recoger":
-        if args.programado_utc is None or not args.inicio_utc <= args.programado_utc <= ahora():
-            parser.error("Se requiere una hora programada UTC válida")
+        if args.programado_utc is not None and not args.inicio_utc <= args.programado_utc <= ahora():
+            parser.error("La hora programada UTC está fuera del intervalo permitido")
         recoger(args.inicio_utc, args.programado_utc, args.carpeta)
     else:
         if not args.url_piloto:
