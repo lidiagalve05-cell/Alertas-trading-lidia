@@ -10,9 +10,11 @@ python -m trading --simular --hasta 2026-11-20T09:35:00+00:00 > informe.md
 python -m trading --simular --activo BTCUSDT --activo ETHUSDT --capital 100 \
   --comision 0.001 --deslizamiento 0.001 --fraccion 0.20 --stop 0.03 \
   --limite-drawdown 0.10 --euros-por-usdt 1
+python -m trading --simular --hasta 2026-11-20T09:35:00+00:00 \
+  --capital 50 --limite-diario 1 --limite-acumulado 5 > informe-50.md
 ```
 
-`--csv` permite elegir otro archivo con el mismo esquema. Para incorporar otro símbolo cotizado en USDT, incluye sus velas en el CSV y repite `--activo` por cada símbolo deseado. Los porcentajes de configuración se expresan como fracciones, por ejemplo, `0.001` equivale a 0,1 %. El corte incluye las velas que ya cerraron en ese instante. El informe marca un cierre desactualizado al superar `--max-retraso` minutos, con 10 minutos por defecto.
+`--csv` permite elegir otro archivo con el mismo esquema. Para incorporar otro símbolo cotizado en USDT, incluye sus velas en el CSV y repite `--activo` por cada símbolo deseado. Los porcentajes de configuración se expresan como fracciones, por ejemplo, `0.001` equivale a 0,1 %. El corte incluye las velas que ya cerraron en ese instante. Un cierre queda desactualizado si ya falta la siguiente vela esperada o si supera el margen explícito de `--max-retraso` en minutos (10 por defecto).
 
 ## Indicadores y señales
 
@@ -35,9 +37,12 @@ Se requieren 50 velas consecutivas por símbolo para emitir señales. Un hueco r
 
 - Cartera de contado con 100 € ficticios, hasta 20 % del patrimonio por entrada, una posición por activo y límite dado por el efectivo disponible. En cada cierre se procesan primero las salidas y después las compras en orden de símbolo.
 - La señal usa solo velas cerradas hasta su hora. La ejecución ordinaria se evalúa al cierre de cinco minutos siguiente, con ese precio más el deslizamiento y la comisión configurados. Las órdenes ordinarias caducan si se pierde ese cierre. Se requieren velas válidas con volumen positivo de todos los activos seleccionados. Las entradas requieren un análisis disponible y se descartan si aparece una señal de riesgo en el cierre de ejecución.
-- El stop evalúa el valor neto de liquidación frente al coste de entrada. Al alcanzar el drawdown máximo permitido, se bloquean las compras durante el resto de la simulación y se ordena liquidar. Las salidas por riesgo esperan el siguiente cierre conjunto válido. Los saltos de precio y la falta de datos pueden hacer que la pérdida supere el umbral.
-- El patrimonio valora posiciones abiertas a precio de liquidación neto de costes. Los aciertos son ventas con beneficio entre todas las ventas cerradas. El registro del informe incluye horas de señal y ejecución, unidades, coste, flujo, resultado y motivo. Cada reproducción reconstruye la misma cartera si recibe los mismos datos, corte y parámetros.
-- El CSV cotiza en USDT. El cálculo en euros ficticios usa un factor fijo configurable con `--euros-por-usdt`. El valor predeterminado de 1 es una equivalencia contable para la simulación. El modelo no incorpora tipo de cambio histórico, libro de órdenes ni ejecución intravela.
+- Durante un hueco, una vela incompleta o un cierre con volumen cero, se pausa la valoración y caducan las órdenes ordinarias cuyo cierre de ejecución se perdió. El informe marca como indeterminados el estado de riesgo al corte, el patrimonio, la rentabilidad y el P/L abierto. Muestra el efectivo, el resultado realizado, las posiciones abiertas, los bloqueos registrados, el número de cierres omitidos y la última valoración válida. Los cierres omitidos se cuentan desde el primer dato observado.
+- El stop de posición compara el valor neto estimado con el coste de entrada. `--limite-diario` y `--limite-acumulado` son optativos y se expresan en euros ficticios. Al alcanzar el límite diario se bloquean entradas hasta el siguiente día UTC con valoración válida. Su referencia es el último patrimonio válido antes de ese día, o el capital inicial al arrancar. El límite acumulado mide la caída frente al capital inicial y bloquea compras durante el resto de la reproducción, igual que el límite de drawdown frente al máximo histórico. Los tres límites de cartera ordenan cerrar las posiciones; incluyen costes estimados y P/L abierto.
+- Las salidas por riesgo se conservan hasta un cierre conjunto posterior con volumen suficiente, incluso si cambia el día. Un salto tras una interrupción se refleja en el día UTC de recuperación. **Los stops y límites de pérdida no garantizan el precio de salida ni limitan la pérdida final al umbral.** Mientras falten datos o liquidez, la posición sigue expuesta.
+- `--importe-minimo` exige 1 € ficticio de nominal de entrada por defecto, después de reservar la comisión. Las salidas pueden cerrar importes menores. `--coste-maximo` rechaza configuraciones cuya fricción estimada de ida y vuelta con precio constante supere el 10 % por defecto. `--participacion-maxima` limita cada ejecución al 1 % del volumen de la vela por defecto. Las órdenes ordinarias sin capacidad caducan y las salidas urgentes se reintentan. El modelo simula ejecuciones completas, carece de libro de órdenes, y el volumen agregado es solo una aproximación de liquidez.
+- El informe desglosa por activo entradas, salidas, P/L realizado, comisiones pagadas, euros de deslizamiento, rechazos y posiciones abiertas. Para cada cierre con pérdida separa el movimiento del precio de los costes de ida y vuelta. El patrimonio usa valor neto teórico de liquidación; el informe avisa cuando una posición supera la participación permitida. El drawdown y las pérdidas máximas usan cierres observados y pueden subestimar pérdidas intravela o durante huecos.
+- El CSV cotiza en USDT. El cálculo usa un factor fijo configurable con `--euros-por-usdt`. El valor predeterminado de 1 es una equivalencia contable, sin tipo de cambio histórico. Con los mismos datos, corte y parámetros, la reproducción reconstruye la misma cartera.
 
 ## Verificación
 
@@ -49,9 +54,19 @@ git show main:datos-cripto.csv > "$CSV_BASE"
 python -m unittest discover -s tests -v
 ```
 
-La ejecución de referencia pasó 17 pruebas, seis del recopilador y once de la fase 2. Cubren indicadores con valores esperados, lectura del CSV, duplicados, costes, rentabilidad, límites de pérdida, cortes causales, datos atrasados e incompletos, e independencia de la red y del recopilador. El flujo de pruebas existente descubre ambos conjuntos y comprueba la conservación del histórico. El PR #1 ya estaba fusionado en el commit `b2213f6`, con 5.532 velas en el CSV de referencia.
+Pasaron 23 pruebas, seis del recopilador y 17 de la fase 2. Se conservan las comprobaciones de indicadores, lectura, duplicados, costes, límites, orden causal e independencia de la red. Los casos nuevos cubren exposición durante una interrupción y su recuperación, un corte atrasado, bloqueo diario y acumulado con 50 € de capital y límites de 1 € y 5 €, importes mínimos, liquidez, y atribución de pérdidas. El flujo existente descubre ambos conjuntos y comprueba la conservación del CSV. El PR #1 se fusionó en el commit `b2213f6`, con 5.532 velas de referencia.
 
-Con el corte del 20 de noviembre de 2026 a las 09:35 UTC y los valores predeterminados se registraron 52 ejecuciones ficticias, con 93,62 € de patrimonio final, −6,38 % de rentabilidad neta, 6,49 % de drawdown máximo y 12 % de aciertos sobre 25 ventas. Quedaron dos posiciones abiertas. La muestra es corta y el resultado describe únicamente esta reproducción.
+Con el corte del 20 de noviembre de 2026 a las 09:35 UTC, el perfil de 100 € registró 52 ejecuciones, con 93,62 € de patrimonio, −6,38 % de rentabilidad, 6,49 % de drawdown máximo y 12 % de aciertos sobre 25 salidas. Quedaron dos posiciones abiertas.
+
+Con 50 € y límites de 1 € diarios y 5 € acumulados se registraron 27 entradas y 25 salidas, con 46,81 € de patrimonio y −6,38 % de rentabilidad. La pérdida diaria máxima observada fue 0,984 € y la acumulada fue 3,243 €, por debajo de ambos límites. Las pruebas sintéticas sí activaron los dos umbrales exactos y comprobaron el desbloqueo diario y la persistencia del acumulado.
+
+| Activo | Entradas | Salidas | P/L realizado | Comisiones | Deslizamiento |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| BTCUSDT | 7 | 6 | −0,571 € | 0,125 € | 0,125 € |
+| ETHUSDT | 10 | 9 | −1,367 € | 0,184 € | 0,184 € |
+| SOLUSDT | 10 | 10 | −1,057 € | 0,193 € | 0,193 € |
+
+Los resultados describen una muestra breve y el modelo de ejecución indicado arriba.
 
 ## Ejecución periódica y Telegram
 

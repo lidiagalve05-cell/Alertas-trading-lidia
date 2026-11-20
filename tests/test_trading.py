@@ -85,7 +85,7 @@ class CSVTest(unittest.TestCase):
 
 class SimuladorTest(unittest.TestCase):
     def procesar(self, cartera, i, precio=100, tipo=None):
-        v = vela(i, precio)
+        v = vela(i, precio, volumen=100)
         cartera.procesar(v.fin, {"BTCUSDT": (v, decision(tipo) if tipo else None)}, {"BTCUSDT"})
 
     def test_comisiones_deslizamiento_y_resultado(self):
@@ -194,3 +194,127 @@ runpy.run_module('trading', run_name='__main__')
                                 capture_output=True, text=True, check=True)
         self.assertIn("Operaciones ficticias", salida.stdout)
         self.assertIn("unidades a", salida.stdout)
+
+
+class ControlesRiesgoTest(unittest.TestCase):
+    def procesar(self, cartera, i, precio=100, tipo=None, volumen=100, completo=True):
+        v = vela(i, precio, volumen)
+        datos = {"BTCUSDT": (v, decision(tipo or "sin señal"))}
+        if completo:
+            datos["ETHUSDT"] = (v, None)
+        cartera.procesar(v.fin, datos, {"BTCUSDT", "ETHUSDT"})
+
+    def test_posicion_abierta_durante_interrupcion_y_recuperacion(self):
+        cartera = Cartera(Configuracion())
+        self.procesar(cartera, 0, tipo="compra")
+        self.procesar(cartera, 1)
+        self.procesar(cartera, 2, precio=93)  # programa el stop
+        self.procesar(cartera, 3, precio=60, completo=False)
+        self.procesar(cartera, 4, precio=65, volumen=0)
+        self.assertEqual(len(cartera.posiciones), 1)
+        self.assertEqual(len(cartera.operaciones), 1)
+        self.assertFalse(cartera.valoracion_disponible())
+        self.assertIsNone(cartera.metricas()["Rentabilidad neta (%)"])
+        self.assertEqual(cartera.cierres_omitidos, 2)
+        texto = generar({"BTCUSDT": [], "ETHUSDT": []}, vela(4).fin, 10, cartera)
+        self.assertIn("estado de riesgo al corte indeterminados", texto)
+        self.assertIn("P/L no realizado n/d", texto)
+        self.assertIn("Orden pendiente · BTCUSDT · riesgo", texto)
+
+        self.procesar(cartera, 6, precio=85)  # también falta todo el cierre 5
+        self.assertTrue(cartera.valoracion_disponible())
+        self.assertEqual(cartera.cierres_omitidos, 3)
+        self.assertFalse(cartera.posiciones)
+        venta = cartera.operaciones[-1]
+        self.assertEqual(venta.orden.hora, vela(2).fin)
+        self.assertEqual(venta.hora, vela(6).fin)
+        self.assertLess(venta.resultado, -3)
+        self.assertIsNotNone(cartera.metricas()["Rentabilidad neta (%)"])
+
+    def test_corte_atrasado_sin_eventos_nuevos_con_exposicion(self):
+        datos = leer_csv(RAIZ / "datos-cripto.csv")
+        fin = datetime(2026, 11, 20, 9, 35, tzinfo=timezone.utc)
+        series = {a: [v for v in datos[a] if v.fin <= fin] for a in ACTIVOS}
+        config = Configuracion()
+        reciente = simular(series, config, fin)
+        atrasada = simular(series, config, fin + INTERVALO)
+        self.assertTrue(reciente.posiciones)
+        self.assertEqual(atrasada.posiciones, reciente.posiciones)
+        self.assertEqual(atrasada.operaciones, reciente.operaciones)
+        self.assertIsNone(atrasada.metricas()["Patrimonio neto estimado (€ ficticios)"])
+        self.assertEqual(atrasada.cierres_omitidos, reciente.cierres_omitidos + 1)
+
+    def test_limites_de_1_y_5_euros_con_capital_50(self):
+        cartera = Cartera(Configuracion(
+            capital=50, limite_diario=1, limite_acumulado=5, limite_drawdown=.9,
+            fraccion=1, stop=.9, comision=0, deslizamiento=0,
+        ))
+        self.procesar(cartera, 0, tipo="compra")
+        self.procesar(cartera, 1)
+        self.procesar(cartera, 2, precio=98)  # patrimonio 49; umbral diario exacto
+        self.assertEqual(cartera.bloqueos, ["Límite de pérdida diaria"])
+        self.procesar(cartera, 3, precio=98, tipo="compra")
+        self.procesar(cartera, 4, tipo="compra")
+        self.assertEqual(len(cartera.operaciones), 2)
+        self.assertEqual(cartera.caja, 49)
+
+        self.procesar(cartera, 287, tipo="compra")  # 00:00 UTC del día siguiente
+        self.assertFalse(cartera.bloqueada)
+        self.assertEqual(cartera.base_diaria, 49)
+        self.procesar(cartera, 288)
+        self.procesar(cartera, 289, precio=100 * 45 / 49)
+        self.assertIn("Límite de pérdida acumulada", cartera.bloqueos)
+        self.procesar(cartera, 290, precio=100 * 45 / 49)
+        self.assertAlmostEqual(cartera.caja, 45)
+        self.procesar(cartera, 575, tipo="compra")
+        self.procesar(cartera, 576, tipo="compra")
+        self.assertEqual(cartera.bloqueos, ["Límite de pérdida acumulada"])
+        self.assertEqual(len(cartera.operaciones), 4)
+
+    def test_importe_minimo_y_validacion_de_costes_y_liquidez(self):
+        for invalida in ({"importe_minimo": 0}, {"importe_minimo": 51},
+                         {"participacion_maxima": 1.1}, {"comision": .08},
+                         {"coste_maximo": 0}, {"limite_diario": -1},
+                         {"limite_acumulado": float("nan")}):
+            with self.subTest(invalida=invalida), self.assertRaises(ValueError):
+                Configuracion(capital=50, **invalida)
+        cartera = Cartera(Configuracion(capital=50, fraccion=.1, importe_minimo=5))
+        self.procesar(cartera, 0, tipo="compra")
+        self.procesar(cartera, 1)
+        self.assertFalse(cartera.operaciones)  # tras la comisión, el nominal es inferior a 5
+        self.assertEqual(cartera.rechazos["BTCUSDT", "Importe de entrada inferior al mínimo"], 1)
+
+    def test_liquidez_limita_entradas_y_aplaza_salidas_urgentes(self):
+        cartera = Cartera(Configuracion(capital=50, fraccion=1))
+        self.procesar(cartera, 0, tipo="compra")
+        self.procesar(cartera, 1, tipo="compra", volumen=1)
+        self.assertFalse(cartera.operaciones)
+        self.procesar(cartera, 2)
+        self.procesar(cartera, 3, precio=95)
+        self.procesar(cartera, 4, precio=90, volumen=1)
+        self.assertEqual(len(cartera.operaciones), 1)
+        self.assertIn("BTCUSDT", cartera.pendientes)
+        texto = generar({"BTCUSDT": [], "ETHUSDT": []}, vela(4).fin, 10, cartera)
+        self.assertIn("El valor estimado es teórico", texto)
+        self.procesar(cartera, 5, precio=1)
+        self.assertEqual(cartera.operaciones[-1].hora, vela(5).fin)
+        self.assertEqual(cartera.operaciones[-1].orden.hora, vela(3).fin)
+        self.assertLess(cartera.operaciones[-1].flujo, cartera.config.importe_minimo)
+        self.assertEqual(cartera.rechazos["BTCUSDT", "Liquidez insuficiente para compra"], 1)
+        self.assertEqual(cartera.rechazos["BTCUSDT", "Liquidez insuficiente para venta"], 1)
+
+    def test_diagnostico_separa_friccion_de_movimiento_y_muestra_exposicion(self):
+        cartera = Cartera(Configuracion())
+        self.procesar(cartera, 0, tipo="compra")
+        self.procesar(cartera, 1, tipo="venta")
+        self.procesar(cartera, 2, tipo="compra")
+        self.procesar(cartera, 3)
+        compra, venta, _ = cartera.operaciones
+        self.assertEqual(venta.movimiento, 0)
+        self.assertAlmostEqual(-venta.resultado, compra.comision + venta.comision
+                               + compra.deslizamiento + venta.deslizamiento)
+        texto = generar({"BTCUSDT": [], "ETHUSDT": []}, vela(3).fin, 10, cartera)
+        for detalle in ("Entradas 2 · Salidas 1", "Comisiones pagadas",
+                        "Deslizamiento soportado", "costes de ida y vuelta",
+                        "Posición abierta desde", "P/L no realizado"):
+            self.assertIn(detalle, texto)
