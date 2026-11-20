@@ -1,11 +1,18 @@
 import requests
 import csv
 import os
-from datetime import datetime, timezone
+import sys
+from datetime import datetime, timedelta, timezone
+
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 MONEDAS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
 ARCHIVO = "datos-cripto.csv"
 URL = "https://data-api.binance.vision/api/v3/klines"
+
+INTERVALO = timedelta(minutes=5)
+RETRASO_MAXIMO = timedelta(minutes=10)
 
 COLUMNAS = [
     "hora", "activo", "apertura", "maximo",
@@ -32,22 +39,31 @@ def leer_datos():
     return registros
 
 
-def obtener_ultima_hora(registros, moneda):
-    horas = [
-        datetime.fromisoformat(hora)
-        for hora, activo in registros
-        if activo == moneda
-    ]
-
-    return max(horas) if horas else None
+def horas_por_moneda(registros, moneda):
+    return sorted(datetime.fromisoformat(hora) for hora, activo in registros if activo == moneda)
 
 
-def descargar_velas(moneda, ultima_hora):
+def huecos(horas):
+    for anterior, siguiente in zip(horas, horas[1:]):
+        if siguiente - anterior > INTERVALO:
+            yield anterior + INTERVALO, siguiente - INTERVALO
+
+
+def crear_sesion():
+    reintentos = Retry(
+        total=3,
+        backoff_factor=1,
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods={"GET"},
+    )
+    sesion = requests.Session()
+    sesion.mount(URL, HTTPAdapter(max_retries=reintentos))
+    return sesion
+
+
+def descargar_velas(sesion, moneda, desde=None, hasta=None):
     nuevas = []
-    inicio = None
-
-    if ultima_hora is not None:
-        inicio = int(ultima_hora.timestamp() * 1000) + 1
+    inicio = int(desde.timestamp() * 1000) if desde is not None else None
 
     while True:
         parametros = {
@@ -59,7 +75,10 @@ def descargar_velas(moneda, ultima_hora):
         if inicio is not None:
             parametros["startTime"] = inicio
 
-        respuesta = requests.get(
+        if hasta is not None:
+            parametros["endTime"] = int(hasta.timestamp() * 1000)
+
+        respuesta = sesion.get(
             URL, params=parametros, timeout=20
         )
         respuesta.raise_for_status()
@@ -101,7 +120,7 @@ def descargar_velas(moneda, ultima_hora):
 
         inicio = int(velas[-1][0]) + 1
 
-        if len(velas) < 1000:
+        if len(velas) < 1000 or (hasta is not None and inicio > parametros["endTime"]):
             break
 
     return nuevas
@@ -127,33 +146,59 @@ def guardar_datos(registros):
     os.replace(temporal, ARCHIVO)
 
 
+def avisar(mensaje):
+    prefijo = "::warning::" if os.getenv("GITHUB_ACTIONS") == "true" else "Aviso: "
+    print(prefijo + mensaje, flush=True)
+
+
+def comprobar_frescura(registros):
+    ahora = datetime.now(timezone.utc)
+    atrasadas = []
+    for moneda in MONEDAS:
+        horas = horas_por_moneda(registros, moneda)
+        if not horas:
+            atrasadas.append(f"{moneda} sin velas")
+            continue
+        retraso = ahora - (horas[-1] + INTERVALO)
+        if retraso > RETRASO_MAXIMO:
+            atrasadas.append(f"{moneda}: última vela cerrada hace {retraso.total_seconds() / 60:.1f} min")
+    return atrasadas
+
+
 def main():
     registros = leer_datos()
-    total_nuevos = 0
+    total_anterior = len(registros)
+    for incidencia in comprobar_frescura(registros):
+        avisar(f"CSV atrasado antes de recopilar: {incidencia}")
 
-    for moneda in MONEDAS:
-        ultima_hora = obtener_ultima_hora(
-            registros, moneda
-        )
+    with crear_sesion() as sesion:
+        for moneda in MONEDAS:
+            horas = horas_por_moneda(registros, moneda)
+            inicio = horas[-1] + INTERVALO if horas else None
+            nuevas = descargar_velas(sesion, moneda, desde=inicio)
+            for desde, hasta in huecos(horas):
+                avisar(f"{moneda}: hueco entre {desde.isoformat()} y {hasta.isoformat()}")
+                nuevas.extend(descargar_velas(sesion, moneda, desde=desde, hasta=hasta))
 
-        nuevas = descargar_velas(
-            moneda, ultima_hora
-        )
+            for fila in nuevas:
+                registros.setdefault((fila["hora"], fila["activo"]), fila)
 
-        for fila in nuevas:
-            clave = (fila["hora"], fila["activo"])
+            for desde, hasta in huecos(horas_por_moneda(registros, moneda)):
+                avisar(f"{moneda}: siguen faltando velas entre {desde.isoformat()} y {hasta.isoformat()}")
 
-            if clave not in registros:
-                registros[clave] = fila
-                total_nuevos += 1
+            print(moneda, "velas descargadas:", len(nuevas))
 
-        print(moneda, "velas descargadas:", len(nuevas))
+    if len(registros) > total_anterior:
+        guardar_datos(registros)
 
-    guardar_datos(registros)
-
-    print("Registros nuevos:", total_nuevos)
+    print("Registros nuevos:", len(registros) - total_anterior)
     print("Total de registros:", len(registros))
 
 
 if __name__ == "__main__":
+    if sys.argv[1:] == ["--comprobar-frescura"]:
+        incidencias = comprobar_frescura(leer_datos())
+        for incidencia in incidencias:
+            avisar(f"CSV atrasado después de recopilar: {incidencia}")
+        sys.exit(bool(incidencias))
     main()
