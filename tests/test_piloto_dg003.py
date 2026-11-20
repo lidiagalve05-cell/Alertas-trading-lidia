@@ -5,8 +5,10 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
+from piloto_dg003 import piloto
 from piloto_dg003.piloto import ACTIVOS, CONTROL, PASO, VENTANA, cierres, observar, recoger, resumen
 
 INICIO = datetime(2026, 11, 20, tzinfo=timezone.utc)
@@ -96,3 +98,116 @@ class PilotoTest(unittest.TestCase):
         self.assertEqual(len(lista), 576)
         self.assertEqual(lista[0], INICIO + PASO)
         self.assertEqual(lista[-1], INICIO + VENTANA)
+
+    def test_reinicio_publica_persistencia_parcial_sin_red(self):
+        guardar = piloto.guardar
+        def falla_publicacion(ruta, datos, modo=0o600):
+            if ruta.parent.name == "publico":
+                raise OSError("Destino de publicación caído")
+            guardar(ruta, datos, modo)
+
+        with patch.object(piloto, "guardar", side_effect=falla_publicacion):
+            with self.assertRaises(RuntimeError):
+                self.recoger(5)
+        respaldos = sorted((self.carpeta / "privado").glob("*.json"))
+        self.assertEqual(len(respaldos), 3)
+        self.assertFalse((self.carpeta / "publico/velas.json").exists())
+        self.recoger(5, lambda _: self.fail("El estado persistido debe publicarse sin red"))
+        publicado = self.leer()
+        for ruta in respaldos:
+            for clave, vela in json.loads(ruta.read_text())["velas"].items():
+                self.assertEqual(publicado[clave], vela)
+                self.assertFalse(vela["recepcion_fuera_de_plazo"])
+
+    def test_reinicio_tras_caida_entre_escrituras_del_lote(self):
+        guardar = piloto.guardar
+        def falla_metadatos(ruta, datos, modo=0o600):
+            if ruta.parent.name == "privado" and any("persistido_utc" in v for v in datos["velas"].values()):
+                raise OSError("Caída antes de guardar confirmación UTC")
+            guardar(ruta, datos, modo)
+        with patch.object(piloto, "guardar", side_effect=falla_metadatos):
+            with self.assertRaises(RuntimeError):
+                self.recoger(5)
+        self.recoger(5, lambda _: self.fail("El lote previo debe recuperarse sin red"))
+        for vela in self.leer().values():
+            self.assertTrue(vela["persistencia_verificada_al_reanudar"])
+
+    def test_interrupcion_prolongada_distingue_las_tres_marcas(self):
+        self.recoger(5)
+        self.recoger(55)
+        observado = INICIO + timedelta(minutes=56)
+        def red(url):
+            if url == CONTROL:
+                raise OSError("Control no disponible")
+            return (self.carpeta / "publico/velas.json").read_bytes(), "piloto"
+        observar(INICIO, self.carpeta, PILOTO, reloj=lambda: observado, red=red)
+        registros = piloto.evidencia(INICIO, self.carpeta, "piloto")
+        filas = list(piloto.detalle(INICIO, registros, "piloto"))
+        etapa_primera = filas[0]["etapas"]["BTCUSDT"]
+        self.assertFalse(etapa_primera["ejecucion_programada_posterior"])
+        self.assertFalse(etapa_primera["recepcion_fuera_de_plazo"])
+        self.assertTrue(etapa_primera["primera_observacion_fuera_de_plazo"])
+        self.assertEqual(filas[0]["clasificacion"], "desconocido")
+        etapa_recuperada = filas[1]["etapas"]["BTCUSDT"]
+        self.assertTrue(etapa_recuperada["ejecucion_programada_posterior"])
+        self.assertTrue(etapa_recuperada["recepcion_fuera_de_plazo"])
+        metricas = piloto.informe(INICIO, self.carpeta)["fuentes"]["piloto"]
+        self.assertEqual(metricas["frescura_minutos"], {"fresco": 1, "atrasado": 0, "desconocido": 2879})
+        self.assertEqual(metricas["incidentes"][0]["minutos"], 56)
+        self.assertEqual(metricas["resultado"], "inconcluso")
+        self.assertEqual(metricas["latencia_s"]["conjunto"], {"p50": 1560, "p95": 3060, "p99": 3060})
+
+    def test_reloj_desfasado_no_da_evidencia_ni_hace_peticion_anticipada(self):
+        with self.assertRaises(ValueError):
+            recoger(INICIO, INICIO + PASO, self.carpeta, reloj=lambda: INICIO,
+                    red=lambda _: self.fail("Disparo futuro"))
+        self.recoger(5)
+        antes = INICIO + PASO
+        observar(INICIO, self.carpeta, PILOTO, reloj=lambda: antes,
+                 red=lambda _: ((self.carpeta / "publico/velas.json").read_bytes(), None))
+        r = piloto.evidencia(INICIO, self.carpeta, "piloto")[0]
+        self.assertEqual(r["estado"], "error")
+        self.assertEqual(piloto.informe(INICIO, self.carpeta)["fuentes"]["piloto"]["cobertura"], 0)
+
+    def test_respuestas_http_con_indicios_de_cache_se_rechazan(self):
+        from unittest.mock import MagicMock
+        for headers in ({"Age": "10"}, {"Warning": '110 proxy "Response is stale"'}, {"X-Cache": "STALE"}):
+            with self.subTest(headers=headers):
+                respuesta_http = MagicMock()
+                respuesta_http.geturl.return_value = PILOTO
+                respuesta_http.headers = headers
+                with patch.object(piloto, "urlopen") as abrir:
+                    abrir.return_value.__enter__.return_value = respuesta_http
+                    with self.assertRaises(piloto.CacheHTTP):
+                        piloto.descargar(PILOTO)
+                    self.assertIn("no-cache", abrir.call_args.args[0].get_header("Cache-control"))
+                    respuesta_http.read.assert_not_called()
+
+    def test_control_duplicado_se_cuenta_como_error_y_minuto_desconocido(self):
+        fecha = INICIO + PASO
+        fila = f"BTCUSDT,{INICIO.isoformat()},10,11,9,10,1\n"
+        cuerpo = ("activo,hora,apertura,maximo,minimo,cierre,volumen\n" + fila * 2).encode()
+        observar(INICIO, self.carpeta, PILOTO, reloj=lambda: fecha, red=lambda _: (cuerpo, None))
+        control = piloto.informe(INICIO, self.carpeta)["fuentes"]["control"]
+        self.assertEqual(control["duplicados_en_lecturas"], 1)
+        self.assertEqual(control["frescura_minutos"]["desconocido"], 2880)
+        self.assertEqual(control["puntualidad"]["desconocido"], 576)
+
+    def test_informe_completo_e_integridad_en_ambos_cortes(self):
+        registros = []
+        presentes = {}
+        for minuto in range(48 * 60 + 6):
+            observado = INICIO + timedelta(minutes=minuto)
+            if minuto and minuto % 5 == 1 and minuto <= 48 * 60 + 1:
+                presentes[(observado - timedelta(minutes=1)).isoformat()] = list(ACTIVOS)
+            registros.append({"estado": "ok", "observado_utc": observado.isoformat(),
+                              "presentes": presentes.copy(), "antiguedad_s": (minuto % 5 + 1) * 60})
+        informe = piloto.medir(INICIO, registros, "piloto")
+        self.assertEqual(informe["resultado"], "cumple")
+        self.assertEqual(informe["puntualidad"]["puntual"], 576)
+        self.assertEqual(informe["latencia_s"]["conjunto"], {"p50": 60, "p95": 60, "p99": 60})
+        self.assertEqual([c["velas_faltantes"] for c in informe["integridad"]], [0, 0])
+        self.assertEqual(informe["cobertura"], 1)
+        sin_corte_final = piloto.medir(INICIO, registros[:-1], "piloto")
+        self.assertEqual(sin_corte_final["resultado"], "inconcluso")
+        self.assertIsNone(sin_corte_final["integridad"][-1]["velas_faltantes"])

@@ -1,0 +1,15 @@
+[Unit]
+Description=DG-003 recopilador experimental
+After=network-online.target time-sync.target
+[Service]
+Type=oneshot
+User=dg003-recoger
+WorkingDirectory=/opt/dg003
+EnvironmentFile=/etc/dg003/recoger.env
+StateDirectory=dg003-recoger
+StateDirectoryMode=0755
+ExecStart=/bin/sh /opt/dg003/piloto_dg003/config/recoger.sh
+TimeoutStartSec=50s
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
