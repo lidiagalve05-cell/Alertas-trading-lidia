@@ -8,9 +8,14 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: recopilar-precios-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   recopilar:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - name: Descargar repositorio
@@ -36,3 +41,17 @@ jobs:
             git commit -m "Actualizar datos de criptomonedas"
             git push
           fi
+
+      - name: Verificar el CSV en la rama remota
+        run: |
+          git fetch --no-tags --depth=1 origin "$GITHUB_REF"
+          esperado=$(git hash-object datos-cripto.csv)
+          publicado=$(git rev-parse FETCH_HEAD:datos-cripto.csv)
+          if [[ "$publicado" != "$esperado" ]]; then
+            echo "::error::El CSV remoto no coincide con el generado"
+            exit 1
+          fi
+          echo "CSV verificado en $GITHUB_REF (blob $publicado)"
+
+      - name: Comprobar frescura del CSV publicado
+        run: python recopilar_datos.py --comprobar-frescura
