@@ -54,8 +54,11 @@ class Analisis:
 def historial(velas):
     ventana, rsi, tendencia = [], RSI(), None
     for vela in velas:
-        if ventana and vela.hora - ventana[-1].hora != INTERVALO:
+        if vela.volumen <= 0 or (ventana and vela.hora - ventana[-1].hora != INTERVALO):
             ventana, rsi, tendencia = [], RSI(), None
+        if vela.volumen <= 0:
+            yield vela, None
+            continue
         ventana.append(vela)
         ventana = ventana[-VENTANA:]
         oscilador = rsi.agregar(vela.cierre)

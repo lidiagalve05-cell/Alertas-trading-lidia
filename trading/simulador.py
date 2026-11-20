@@ -146,9 +146,9 @@ class Cartera:
         }
         self.patrimonio = self.caja + sum(self.marcas.values())
         self.pico = max(self.pico, self.patrimonio)
-        caida = 1 - self.patrimonio / self.pico
+        caida = (self.pico - self.patrimonio) / self.pico
         self.drawdown = max(self.drawdown, caida)
-        if caida >= self.config.limite_drawdown:
+        if caida >= self.config.limite_drawdown or isclose(caida, self.config.limite_drawdown):
             self.bloqueos_permanentes.add("Límite de drawdown de cartera")
         diario, acumulado = self.config.limite_diario, self.config.limite_acumulado
         perdida_diaria = self.base_diaria - self.patrimonio
@@ -240,13 +240,14 @@ class Cartera:
                 self.ejecutar(activo, orden, velas[activo])
             self.valorar(velas)
 
-        for activo, (vela, analisis) in datos.items():
+        for activo, (_, analisis) in datos.items():
             if activo in self.pendientes:
                 continue
             posicion = self.posiciones.get(activo)
+            perdida = (posicion.coste - self.marcas[activo]) / posicion.coste if posicion else 0
             if posicion and self.bloqueada:
                 self.pendientes[activo] = Orden(hora, "riesgo", " / ".join(self.bloqueos))
-            elif posicion and self.liquidacion(posicion, vela) <= posicion.coste * (1 - self.config.stop):
+            elif posicion and (perdida >= self.config.stop or isclose(perdida, self.config.stop)):
                 self.pendientes[activo] = Orden(hora, "riesgo", "Límite de pérdida de la posición")
             elif analisis and (posicion or not self.bloqueada):
                 lado = "venta" if posicion else "compra"

@@ -31,7 +31,7 @@ python -m trading --simular --hasta 2026-11-20T09:35:00+00:00 \
 | Volumen anormal | Al menos dos veces la media previa. |
 | Riesgo alto | Volatilidad de al menos 0,8 %, movimiento absoluto de al menos 2 %, volumen cero o referencia de volumen ausente. |
 
-Se requieren 50 velas consecutivas por símbolo para emitir señales. Un hueco reinicia el cálculo. Los umbrales son heurísticos y las señales describen condiciones observadas. La presión compradora del recopilador queda disponible en el CSV.
+Se requieren 50 velas consecutivas con volumen positivo por símbolo para emitir señales. Un hueco o un cierre con volumen cero reinicia el cálculo. Los umbrales son heurísticos y las señales describen condiciones observadas. La presión compradora del recopilador queda disponible en el CSV.
 
 ## Reglas de simulación
 
@@ -54,7 +54,7 @@ git show main:datos-cripto.csv > "$CSV_BASE"
 python -m unittest discover -s tests -v
 ```
 
-Pasaron 23 pruebas, seis del recopilador y 17 de la fase 2. Se conservan las comprobaciones de indicadores, lectura, duplicados, costes, límites, orden causal e independencia de la red. Los casos nuevos cubren exposición durante una interrupción y su recuperación, un corte atrasado, bloqueo diario y acumulado con 50 € de capital y límites de 1 € y 5 €, importes mínimos, liquidez, y atribución de pérdidas. El flujo existente descubre ambos conjuntos y comprueba la conservación del CSV. El PR #1 se fusionó en el commit `b2213f6`, con 5.532 velas de referencia.
+La suite contiene 26 pruebas, seis del recopilador y 20 de la fase 2. Las regresiones comprueban el reinicio tras una vela sin volumen y la activación del stop y del drawdown en el umbral exacto. Se conservan las comprobaciones de indicadores, lectura, duplicados, costes, límites, orden causal e independencia de la red. Los casos nuevos cubren exposición durante una interrupción y su recuperación, un corte atrasado, bloqueo diario y acumulado con 50 € de capital y límites de 1 € y 5 €, importes mínimos, liquidez, y atribución de pérdidas. El flujo existente descubre ambos conjuntos y comprueba la conservación del CSV. El PR #1 se fusionó en el commit `b2213f6`, con 5.532 velas de referencia.
 
 Con el corte del 20 de noviembre de 2026 a las 09:35 UTC, el perfil de 100 € registró 52 ejecuciones, con 93,62 € de patrimonio, −6,38 % de rentabilidad, 6,49 % de drawdown máximo y 12 % de aciertos sobre 25 salidas. Quedaron dos posiciones abiertas.
 
@@ -66,7 +66,14 @@ Con 50 € y límites de 1 € diarios y 5 € acumulados se registraron 27 entr
 | ETHUSDT | 10 | 9 | −1,367 € | 0,184 € | 0,184 € |
 | SOLUSDT | 10 | 10 | −1,057 € | 0,193 € | 0,193 € |
 
-Los resultados describen una muestra breve y el modelo de ejecución indicado arriba.
+### Riesgos pendientes
+
+| Riesgo | Impacto y limitación |
+| --- | --- |
+| R01 · Ejecución optimista | El cierre, el volumen agregado y las comprobaciones de riesgo de esa vela están disponibles en el modelo después del cierre. El simulador usa ese mismo precio de cierre como referencia para una ejecución ficticia. Sin cotizaciones posteriores, libro de órdenes ni hora real de recepción de cada vela, el precio ejecutable, la capacidad y los retrasos históricos siguen sin verificarse. Una vela incorporada tarde al CSV puede aparecer en la reproducción a su hora nominal. |
+| R02 · Pérdida superior al stop | Los stops y límites se evalúan en cierres conjuntos y la salida puede quedar pendiente por falta de datos o volumen. La recuperación puede ejecutarse a un precio peor que el umbral. Las pruebas comprueban esa exposición y la conservación de la orden urgente, pero no acotan la pérdida. |
+| R03 · EUR/USDT fijo | El factor de conversión constante sirve como unidad contable. Puede ocultar el efecto del tipo de cambio sobre el patrimonio, los resultados y los umbrales en euros. |
+| R04 · Validación estadística insuficiente | Las pruebas verifican el comportamiento del código y los escenarios de pérdida. El histórico de referencia es breve y carece de evaluación fuera de muestra. No permite inferir rentabilidad ni generalizar el riesgo observado. |
 
 ## Ejecución periódica y Telegram
 

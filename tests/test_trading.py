@@ -25,6 +25,14 @@ def decision(tipo):
 
 
 class IndicadoresTest(unittest.TestCase):
+    def test_volumen_cero_reinicia_la_ventana_de_senales(self):
+        velas = [vela(i) for i in range(100)]
+        velas[50] = vela(50, precio=50, volumen=0)
+        resultados = list(historial(velas + [vela(100)]))
+        self.assertIsNotNone(resultados[49][1])
+        self.assertTrue(all(a is None for _, a in resultados[50:100]))
+        self.assertEqual(resultados[100][1].indicadores["RSI14"], 50)
+
     def test_rsi_wilder(self):
         precios = [44.34, 44.09, 44.15, 43.61, 44.33, 44.83, 45.10,
                    45.42, 45.84, 46.08, 45.89, 46.03, 45.61, 46.28,
@@ -230,6 +238,27 @@ class ControlesRiesgoTest(unittest.TestCase):
         self.assertEqual(venta.hora, vela(6).fin)
         self.assertLess(venta.resultado, -3)
         self.assertIsNotNone(cartera.metricas()["Rentabilidad neta (%)"])
+
+    def test_drawdown_se_activa_en_el_umbral_exacto(self):
+        cartera = Cartera(Configuracion(
+            fraccion=1, comision=0, deslizamiento=0, limite_drawdown=.1, stop=.9,
+        ))
+        self.procesar(cartera, 0, tipo="compra")
+        self.procesar(cartera, 1)
+        self.procesar(cartera, 2, precio=90)
+        self.assertEqual(cartera.bloqueos, ["Límite de drawdown de cartera"])
+        self.assertEqual(cartera.metricas()["Drawdown máximo observado (%)"], 10)
+        self.procesar(cartera, 3, precio=88)
+        self.assertEqual(cartera.operaciones[-1].resultado, -12)
+
+    def test_stop_se_activa_en_el_umbral_exacto(self):
+        cartera = Cartera(Configuracion(comision=0, deslizamiento=0, stop=.03))
+        self.procesar(cartera, 0, tipo="compra")
+        self.procesar(cartera, 1)
+        self.procesar(cartera, 2, precio=97)
+        self.assertEqual(cartera.pendientes["BTCUSDT"].lado, "riesgo")
+        self.procesar(cartera, 3, precio=95)
+        self.assertAlmostEqual(cartera.operaciones[-1].resultado, -1)
 
     def test_corte_atrasado_sin_eventos_nuevos_con_exposicion(self):
         datos = leer_csv(RAIZ / "datos-cripto.csv")
