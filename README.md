@@ -1,6 +1,6 @@
 # Analista y simulador de criptomonedas
 
-La fase 2 lee el histórico de velas cerradas de cinco minutos en `datos-cripto.csv`. Por defecto analiza BTCUSDT, ETHUSDT y SOLUSDT. Los módulos de análisis, simulación e informes usan la biblioteca estándar de Python 3.11 o posterior. El simulador opera localmente con capital ficticio y carece de conexión a una bolsa, una cuenta o una API de órdenes.
+La fase 2 lee el histórico de velas cerradas de cinco minutos en `datos-cripto.csv`. Por defecto analiza BTCUSDT, ETHUSDT y SOLUSDT. Los módulos de análisis, simulación e informes usan la biblioteca estándar de Python 3.11 o posterior. El simulador histórico es experimental y opera localmente con capital exclusivamente ficticio y carece de conexión a una bolsa, una cuenta o una API de órdenes.
 
 ## Ejecutar
 
@@ -54,7 +54,7 @@ git show main:datos-cripto.csv > "$CSV_BASE"
 python -m unittest discover -s tests -v
 ```
 
-La suite contiene 26 pruebas, seis del recopilador y 20 de la fase 2. Las regresiones comprueban el reinicio tras una vela sin volumen y la activación del stop y del drawdown en el umbral exacto. Se conservan las comprobaciones de indicadores, lectura, duplicados, costes, límites, orden causal e independencia de la red. Los casos nuevos cubren exposición durante una interrupción y su recuperación, un corte atrasado, bloqueo diario y acumulado con 50 € de capital y límites de 1 € y 5 €, importes mínimos, liquidez, y atribución de pérdidas. El flujo existente descubre ambos conjuntos y comprueba la conservación del CSV. El PR #1 se fusionó en el commit `b2213f6`, con 5.532 velas de referencia.
+La suite contiene 27 pruebas, seis del recopilador y 21 de la fase 2. Las regresiones comprueban el reinicio tras una vela sin volumen y la activación del stop y del drawdown en el umbral exacto. Se conservan las comprobaciones de indicadores, lectura, duplicados, costes, límites, orden causal e independencia de la red. Los casos nuevos cubren exposición durante una interrupción y su recuperación, un corte atrasado, bloqueo diario y acumulado con 50 € de capital y límites de 1 € y 5 €, importes mínimos, liquidez, y atribución de pérdidas. El flujo existente descubre ambos conjuntos y comprueba la conservación del CSV. El PR #1 se fusionó en el commit `b2213f6`, con 5.532 velas de referencia.
 
 Con el corte del 20 de noviembre de 2026 a las 09:35 UTC, el perfil de 100 € registró 52 ejecuciones, con 93,62 € de patrimonio, −6,38 % de rentabilidad, 6,49 % de drawdown máximo y 12 % de aciertos sobre 25 salidas. Quedaron dos posiciones abiertas.
 
@@ -65,6 +65,8 @@ Con 50 € y límites de 1 € diarios y 5 € acumulados se registraron 27 entr
 | BTCUSDT | 7 | 6 | −0,571 € | 0,125 € | 0,125 € |
 | ETHUSDT | 10 | 9 | −1,367 € | 0,184 € | 0,184 € |
 | SOLUSDT | 10 | 10 | −1,057 € | 0,193 € | 0,193 € |
+
+Los cuatro límites comparan pérdidas en euros ficticios. Para absorber el redondeo se admite una diferencia de hasta ocho unidades del último lugar (ULP) del importe de referencia, con un tope de `1e-10` veces el umbral. La referencia es el coste de entrada para el stop, el pico de patrimonio para el drawdown, el patrimonio de inicio del día para el límite diario y el capital inicial para el acumulado.
 
 ### Riesgos pendientes
 

@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from datetime import datetime, timezone
+from math import inf, nextafter
 from pathlib import Path
 
 from trading.analista import Analisis, RSI, Senal, historial
@@ -259,6 +260,34 @@ class ControlesRiesgoTest(unittest.TestCase):
         self.assertEqual(cartera.pendientes["BTCUSDT"].lado, "riesgo")
         self.procesar(cartera, 3, precio=95)
         self.assertAlmostEqual(cartera.operaciones[-1].resultado, -1)
+
+    def test_tolerancia_de_los_cuatro_limites(self):
+        controles = (
+            ("stop", .1, "Límite de pérdida de la posición"),
+            ("limite_drawdown", .1, "Límite de drawdown de cartera"),
+            ("limite_diario", 10, "Límite de pérdida diaria"),
+            ("limite_acumulado", 10, "Límite de pérdida acumulada"),
+        )
+        precios = (
+            (90 + 5e-9, False),  # Por debajo de la pérdida umbral, dentro del antiguo isclose.
+            (nextafter(90, inf), True),  # Diferencia atribuible al redondeo.
+            (90, True),
+            (nextafter(90, -inf), True),
+            (90 - 5e-9, True),
+        )
+        for control, umbral, motivo in controles:
+            for precio, activa in precios:
+                with self.subTest(control=control, precio=precio):
+                    parametros = dict(stop=.9, limite_drawdown=.9)
+                    parametros[control] = umbral
+                    cartera = Cartera(Configuracion(
+                        fraccion=1, comision=0, deslizamiento=0, **parametros,
+                    ))
+                    self.procesar(cartera, 0, tipo="compra")
+                    self.procesar(cartera, 1)
+                    self.procesar(cartera, 2, precio=precio)
+                    orden = cartera.pendientes.get("BTCUSDT")
+                    self.assertEqual(orden.motivo if orden else None, motivo if activa else None)
 
     def test_corte_atrasado_sin_eventos_nuevos_con_exposicion(self):
         datos = leer_csv(RAIZ / "datos-cripto.csv")

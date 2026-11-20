@@ -3,10 +3,16 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from itertools import groupby
-from math import isclose, isfinite
+from math import isfinite, ulp
 
 from .analista import historial
 from .datos import INTERVALO
+
+
+def alcanza_limite(perdida, umbral, referencia):
+    # La resta de importes puede perder precisión a escala de la referencia.
+    tolerancia = min(8 * ulp(referencia), umbral * 1e-10)
+    return perdida > 0 and umbral - perdida <= tolerancia
 
 
 @dataclass(frozen=True)
@@ -146,18 +152,19 @@ class Cartera:
         }
         self.patrimonio = self.caja + sum(self.marcas.values())
         self.pico = max(self.pico, self.patrimonio)
-        caida = (self.pico - self.patrimonio) / self.pico
+        perdida_desde_pico = self.pico - self.patrimonio
+        caida = perdida_desde_pico / self.pico
         self.drawdown = max(self.drawdown, caida)
-        if caida >= self.config.limite_drawdown or isclose(caida, self.config.limite_drawdown):
+        if alcanza_limite(perdida_desde_pico, self.config.limite_drawdown * self.pico, self.pico):
             self.bloqueos_permanentes.add("Límite de drawdown de cartera")
         diario, acumulado = self.config.limite_diario, self.config.limite_acumulado
         perdida_diaria = self.base_diaria - self.patrimonio
         perdida_acumulada = self.config.capital - self.patrimonio
         self.perdida_diaria_maxima = max(self.perdida_diaria_maxima, perdida_diaria)
         self.perdida_acumulada_maxima = max(self.perdida_acumulada_maxima, perdida_acumulada)
-        if diario is not None and (perdida_diaria >= diario or isclose(perdida_diaria, diario)):
+        if diario is not None and alcanza_limite(perdida_diaria, diario, self.base_diaria):
             self.bloqueo_diario = True
-        if acumulado is not None and (perdida_acumulada >= acumulado or isclose(perdida_acumulada, acumulado)):
+        if acumulado is not None and alcanza_limite(perdida_acumulada, acumulado, self.config.capital):
             self.bloqueos_permanentes.add("Límite de pérdida acumulada")
 
     def ejecutar(self, activo, orden, vela):
@@ -244,10 +251,11 @@ class Cartera:
             if activo in self.pendientes:
                 continue
             posicion = self.posiciones.get(activo)
-            perdida = (posicion.coste - self.marcas[activo]) / posicion.coste if posicion else 0
             if posicion and self.bloqueada:
                 self.pendientes[activo] = Orden(hora, "riesgo", " / ".join(self.bloqueos))
-            elif posicion and (perdida >= self.config.stop or isclose(perdida, self.config.stop)):
+            elif posicion and alcanza_limite(
+                posicion.coste - self.marcas[activo], self.config.stop * posicion.coste, posicion.coste,
+            ):
                 self.pendientes[activo] = Orden(hora, "riesgo", "Límite de pérdida de la posición")
             elif analisis and (posicion or not self.bloqueada):
                 lado = "venta" if posicion else "compra"
