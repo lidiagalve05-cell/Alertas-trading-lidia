@@ -43,3 +43,33 @@ Los tests usan directorios temporales, datos sintéticos y reloj UTC fijo. No cr
 **Prohibiciones:** no fusionar, desplegar, activar automatizaciones, modificar recopilador principal, incluir credenciales reales ni operar con dinero real.
 
 **Siguiente paso:** ejecución desde clon limpio, pruebas de concurrencia y fallos combinados, implementación de supervisor externo simulado y política de reintentos; revisión preliminar DG antes de solicitar RA.
+
+
+## DG-014: verificación independiente (pendiente)
+
+Se añadieron siete pruebas de regresión en `test_dg014.py` y correcciones de rechazo de reloj regresivo, vela futura y reenvío ambiguo. **Estas siete pruebas NO han sido ejecutadas desde clon limpio**. La ejecución local previa de diez casos corresponde a otro paquete local anterior y no valida el HEAD actual del PR.
+
+Ejecutar desde clon limpio (sin conexión a servicios durante las pruebas):
+
+```bash
+git clone https://github.com/lidiagalve05-cell/Alertas-trading-lidia.git
+cd Alertas-trading-lidia
+git checkout codex/bot2-v0.3-ra010b
+cd bot2_v03
+python -m unittest discover -s . -p 'test*.py' -v 2>&1 | tee dg014-unittest.log
+```
+
+**Criterio:** todas las pruebas deben pasar, y guardar SHA del commit, versión Python, log íntegro y código de salida (con `set -o pipefail` en Bash). La prueba concurrente puede revelar una carrera SQLite; no se presume éxito. Aún falta prueba de terminación forzada entre transacciones, caída del supervisor y fallos simultáneos de ambos canales.
+
+### Supervisor externo: propuesta verificable, no desplegada
+
+Un segundo proceso independiente y con almacenamiento separado observará latidos emitidos por el vigilante, con secuencia monotónica y timestamp UTC, verificará al menos dos latidos ausentes y duración de silencio; identificará por separado fallo de productor, fallo de publicación y fallo del propio supervisor mediante un tercer observador o servicio de comprobación. Simular los tres fallos con relojes controlados antes de aprobar. No activar ninguna programación.
+
+### Matriz de aceptación pendiente
+
+- B01: umbrales implementados; validar límites y timestamp futuro sobre HEAD.
+- B02: función simulada; supervisor externo y sus fallos **pendientes**.
+- B03: doble observación; probar reloj regresivo y reinicio **pendiente de ejecución**.
+- B04: eventos de subida/bajada; prueba de regresión **pendiente de ejecución**.
+- B05: claves por origen/episodio; concurrencia entre procesos **pendiente de ejecución**.
+- B06: SQLite y outbox; entrega ambigua requiere conciliación manual, falta dispatcher/backoff, caída durante escritura y confirmación de entrega **pendientes**.
