@@ -37,7 +37,7 @@ def inspect_csv(raw,now,source="github-published"):
             missing=int((y-x)/FIVE)-1
             if missing>0: issues.append((a,"CONTINUITY","CRITICAL" if missing>=3 else "HIGH",f"{utc(x)}:{missing}",source))
         age=(now-ordered[-1]-FIVE).total_seconds()/60
-        if age < -5: issues.append((a,"INTEGRITY","CRITICAL","future",source))
+        if ordered[-1] > now or age < -5: issues.append((a,"INTEGRITY","CRITICAL","future",source))
         elif age>7: issues.append((a,"FRESHNESS","CRITICAL" if age>20 else "HIGH" if age>10 else "WARNING",f"{age:.3f}m",source))
     return issues
 
@@ -66,7 +66,9 @@ class Ledger:
         with self.db:
             for a,k,src in sorted(set(checked_keys)|set(failures)):
                 key=(a,k,src); ikey=json.dumps(key,separators=(",",":"))
-                old=self.db.execute("SELECT id,episode,status,severity,good_since FROM incidents WHERE ikey=? ORDER BY episode DESC LIMIT 1",(ikey,)).fetchone()
+                old=self.db.execute("SELECT id,episode,status,severity,good_since,updated FROM incidents WHERE ikey=? ORDER BY episode DESC LIMIT 1",(ikey,)).fetchone()
+                if old and now < datetime.fromisoformat(old[5].replace("Z","+00:00")):
+                    raise ValueError("regressive_observation_clock")
                 fail=failures.get(key)
                 if fail:
                     severity,detail=fail
@@ -85,6 +87,8 @@ class Ledger:
                     if not good:
                         self.db.execute("UPDATE incidents SET status='RECOVERING',good_since=?,updated=? WHERE id=?",(utc(now),utc(now),iid))
                         self.event(iid,"RECOVERING",now)
+                    elif now < datetime.fromisoformat(good.replace("Z","+00:00")):
+                        raise ValueError("regressive_recovery_clock")
                     elif now-datetime.fromisoformat(good.replace("Z","+00:00"))>=FIVE:
                         self.db.execute("UPDATE incidents SET status='RESOLVED',updated=? WHERE id=?",(utc(now),iid))
                         self.event(iid,"RESOLVE",now)
@@ -94,7 +98,12 @@ class Ledger:
         return self.db.execute("SELECT event,attempts FROM outbox WHERE status IN ('PENDING','RETRY') AND (next_at IS NULL OR next_at<=?) ORDER BY rowid",(utc(now),)).fetchall()
     def delivery(self,eid,result,now):
         if result not in ("ACK","RETRY","UNKNOWN"):raise ValueError("result")
+        utc(now)
         with self.db:
+            state=self.db.execute("SELECT status FROM outbox WHERE event=?",(eid,)).fetchone()
+            if state is None: raise KeyError("unknown_notification")
+            if state[0]=="ACKED": return
+            if state[0]=="UNKNOWN" and result=="RETRY": raise ValueError("ambiguous_delivery_requires_reconciliation")
             self.db.execute("UPDATE outbox SET status=?,attempts=attempts+1,next_at=?,last_error=? WHERE event=?",
               ("ACKED" if result=="ACK" else result,None if result=="ACK" else utc(now+timedelta(seconds=60)),None if result=="ACK" else result,eid))
     def close(self):self.db.close()
