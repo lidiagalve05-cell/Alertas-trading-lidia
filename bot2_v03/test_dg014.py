@@ -33,7 +33,7 @@ class DG014(unittest.TestCase):
             eid=l.pending(T)[0][0];l.delivery(eid,"UNKNOWN",T)
             self.assertEqual(l.pending(T+timedelta(hours=1)),[])
             with self.assertRaises(ValueError):l.delivery(eid,"RETRY",T+timedelta(minutes=1))
-            l.delivery(eid,"ACK",T+timedelta(minutes=2))
+            l.reconcile_unknown(eid,"CONFIRMED_DELIVERED",T+timedelta(minutes=2),"provider_receipt")
             self.assertEqual(l.pending(),[]);l.close()
     def test_reopen_preserves_outbox(self):
         with tempfile.TemporaryDirectory() as d:
