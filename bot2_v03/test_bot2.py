@@ -32,7 +32,7 @@ class Cases(unittest.TestCase):
             l.reconcile([("BTCUSDT","FRESHNESS","HIGH","late","github")],NOW,[key])
             eid=l.pending()[0][0];l.delivery(eid,MockAdapter("UNKNOWN").send(eid),NOW);l.close()
             l=Ledger(p);self.assertEqual(l.db.execute("SELECT status FROM outbox").fetchone()[0],"UNKNOWN")
-            l.reconcile_unknown(eid,"CONFIRMED_DELIVERED",NOW,"provider_receipt_123");self.assertEqual(l.pending(),[]);l.close()
+            l.reconcile_unknown(eid,"CONFIRMED_DELIVERED",NOW,"provider_receipt_123",actor="auditor_1");self.assertEqual(l.pending(),[]);l.close()
     def test_T07_watchdog(self):
         self.assertEqual(supervise_heartbeat(NOW,NOW-timedelta(minutes=13)),"MONITOR_CRITICAL")
         self.assertEqual(supervise_heartbeat(NOW,None,supervisor_ok=False),"SUPERVISOR_UNKNOWN")
@@ -43,11 +43,11 @@ class Cases(unittest.TestCase):
             l.reconcile([("BTCUSDT","FRESHNESS","HIGH","late","github")],NOW+timedelta(minutes=1),[key])
             self.assertEqual(l.db.execute("SELECT kind FROM events ORDER BY rowid").fetchall(),[("OPEN",),("DEESCALATE",)])
             l.reconcile([],NOW+timedelta(minutes=2),[key]);l.close()
-            l=Ledger(p);l.reconcile([],NOW+timedelta(minutes=6),[key])
+            l=Ledger(p);l.reconcile([],NOW+timedelta(minutes=7),[key])
             self.assertEqual(l.db.execute("SELECT status FROM incidents").fetchone()[0],"RECOVERING")
-            l.reconcile([],NOW+timedelta(minutes=7),[key])
+            l.reconcile([],NOW+timedelta(minutes=12),[key])
             self.assertEqual(l.db.execute("SELECT status FROM incidents").fetchone()[0],"RESOLVED")
-            l.reconcile([("BTCUSDT","FRESHNESS","HIGH","late","github")],NOW+timedelta(minutes=8),[key])
+            l.reconcile([("BTCUSDT","FRESHNESS","HIGH","late","github")],NOW+timedelta(minutes=13),[key])
             self.assertEqual(l.db.execute("SELECT COUNT(*) FROM incidents").fetchone()[0],2);l.close()
     def test_integration_unknown(self):
         with tempfile.TemporaryDirectory() as d:
