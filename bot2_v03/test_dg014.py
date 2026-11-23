@@ -51,4 +51,27 @@ class DG014(unittest.TestCase):
             for t in threads:t.join()
             self.assertEqual(errors,[])
             l=Ledger(path);self.assertEqual(l.db.execute("SELECT COUNT(*) FROM incidents").fetchone()[0],1);l.close()
+    def test_parallel_initialization_stress(self):
+        for repetition in range(5):
+            with tempfile.TemporaryDirectory() as d:
+                path=os.path.join(d,"db")
+                barrier=threading.Barrier(6)
+                errors=[]
+                def worker():
+                    try:
+                        barrier.wait(timeout=10)
+                        ledger=Ledger(path)
+                        ledger.reconcile(ISSUE,T,[K])
+                        ledger.close()
+                    except Exception as exc:
+                        errors.append(repr(exc))
+                workers=[threading.Thread(target=worker) for _ in range(6)]
+                for thread in workers:thread.start()
+                for thread in workers:thread.join(timeout=40)
+                self.assertFalse(any(thread.is_alive() for thread in workers),"worker did not finish")
+                self.assertEqual(errors,[])
+                ledger=Ledger(path)
+                self.assertEqual(ledger.db.execute("SELECT COUNT(*) FROM incidents").fetchone()[0],1)
+                self.assertEqual(ledger.db.execute("SELECT COUNT(*) FROM events WHERE kind='OPEN'").fetchone()[0],1)
+                ledger.close()
 if __name__=="__main__":unittest.main(verbosity=2)
