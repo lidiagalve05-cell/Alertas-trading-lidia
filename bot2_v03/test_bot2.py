@@ -32,7 +32,7 @@ class Cases(unittest.TestCase):
             l.reconcile([("BTCUSDT","FRESHNESS","HIGH","late","github")],NOW,[key])
             eid=l.pending()[0][0];l.delivery(eid,MockAdapter("UNKNOWN").send(eid),NOW);l.close()
             l=Ledger(p);self.assertEqual(l.db.execute("SELECT status FROM outbox").fetchone()[0],"UNKNOWN")
-            l.delivery(eid,"ACK",NOW);self.assertEqual(l.pending(),[]);l.close()
+            l.reconcile_unknown(eid,"CONFIRMED_DELIVERED",NOW,"provider_receipt_123");self.assertEqual(l.pending(),[]);l.close()
     def test_T07_watchdog(self):
         self.assertEqual(supervise_heartbeat(NOW,NOW-timedelta(minutes=13)),"MONITOR_CRITICAL")
         self.assertEqual(supervise_heartbeat(NOW,None,supervisor_ok=False),"SUPERVISOR_UNKNOWN")
