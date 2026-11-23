@@ -1,5 +1,5 @@
 """Bot 2 v0.3: núcleo aislado, sin red ni servicios activos."""
-import csv, hashlib, io, json, math, sqlite3
+import csv, hashlib, io, json, math, sqlite3, time
 from datetime import datetime, timedelta, timezone
 
 ASSETS=("BTCUSDT","ETHUSDT","SOLUSDT")
@@ -44,8 +44,20 @@ def inspect_csv(raw,now,source="github-published"):
 class Ledger:
     """SQLite transaccional: episodios, eventos y outbox durable."""
     def __init__(self,path):
-        self.db=sqlite3.connect(path,timeout=5)
-        self.db.execute("PRAGMA journal_mode=WAL")
+        self.db=sqlite3.connect(path,timeout=30)
+        self.db.execute("PRAGMA busy_timeout=30000")
+        # WAL initialization may itself race with another process opening the DB.
+        # Retry only SQLITE_BUSY/LOCKED during initialization, with a hard deadline.
+        deadline=time.monotonic()+30
+        while True:
+            try:
+                self.db.execute("PRAGMA journal_mode=WAL")
+                break
+            except sqlite3.OperationalError as exc:
+                if exc.sqlite_errorcode not in (sqlite3.SQLITE_BUSY,sqlite3.SQLITE_LOCKED) or time.monotonic()>=deadline:
+                    self.db.close()
+                    raise
+                time.sleep(0.05)
         self.db.executescript("""
         CREATE TABLE IF NOT EXISTS incidents(id TEXT PRIMARY KEY, ikey TEXT, episode INTEGER,
           status TEXT, severity TEXT, good_since TEXT, updated TEXT, UNIQUE(ikey,episode));
