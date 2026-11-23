@@ -43,11 +43,12 @@ class Cases(unittest.TestCase):
             l.reconcile([("BTCUSDT","FRESHNESS","HIGH","late","github")],NOW+timedelta(minutes=1),[key])
             self.assertEqual(l.db.execute("SELECT kind FROM events ORDER BY rowid").fetchall(),[("OPEN",),("DEESCALATE",)])
             l.reconcile([],NOW+timedelta(minutes=2),[key]);l.close()
-            l=Ledger(p);l.reconcile([],NOW+timedelta(minutes=7),[key])
+            l=Ledger(p);l.reconcile([],NOW+timedelta(minutes=8),[key])
             self.assertEqual(l.db.execute("SELECT status FROM incidents").fetchone()[0],"RECOVERING")
-            l.reconcile([],NOW+timedelta(minutes=12),[key])
+            self.assertEqual(l.db.execute("SELECT COUNT(*) FROM events WHERE kind='RESOLVE'").fetchone()[0],0)
+            l.reconcile([],NOW+timedelta(minutes=13),[key])
             self.assertEqual(l.db.execute("SELECT status FROM incidents").fetchone()[0],"RESOLVED")
-            l.reconcile([("BTCUSDT","FRESHNESS","HIGH","late","github")],NOW+timedelta(minutes=13),[key])
+            l.reconcile([("BTCUSDT","FRESHNESS","HIGH","late","github")],NOW+timedelta(minutes=14),[key])
             self.assertEqual(l.db.execute("SELECT COUNT(*) FROM incidents").fetchone()[0],2);l.close()
     def test_integration_unknown(self):
         with tempfile.TemporaryDirectory() as d:
