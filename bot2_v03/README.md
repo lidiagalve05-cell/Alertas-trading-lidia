@@ -73,3 +73,10 @@ Un segundo proceso independiente y con almacenamiento separado observará latido
 - B04: eventos de subida/bajada; prueba de regresión **pendiente de ejecución**.
 - B05: claves por origen/episodio; concurrencia entre procesos **pendiente de ejecución**.
 - B06: SQLite y outbox; entrega ambigua requiere conciliación manual, falta dispatcher/backoff, caída durante escritura y confirmación de entrega **pendientes**.
+
+## DG-031 / RA-030 — correcciones H01 y H02 (pendientes de ejecución independiente)
+
+- **H01:** una comprobación sin la clave evaluada mientras la incidencia está en RECOVERING cancela la secuencia (OPEN, good_since=NULL). Una observación fallida también la cancela. Solo una nueva pareja de observaciones correctas separadas >=5 minutos puede cerrar el episodio. Una observación ausente no equivale a salud.
+- **H02:** UNKNOWN se retiene, no se reintenta automáticamente y tampoco puede convertirse en ACKED mediante `delivery()`. `reconcile_unknown(event, "CONFIRMED_DELIVERED", now, evidence)` requiere evidencia manual no vacía y registra un evento auditable; `KEEP_UNKNOWN` conserva la retención. **No existe reconciliación automática con Telegram ni autorización para reenvío manual de un UNKNOWN.** Los justificantes son texto proporcionado por el operador, no prueba criptográfica de entrega.
+- **Riesgos medios pendientes:** supervisor externo independiente, dispatcher/backoff, verificación real de publicación y fallos simultáneos; sin despliegue.
+- **Reproducibilidad:** fijar SHA del commit, `set -o pipefail`, `python -m unittest discover -s bot2_v03 -p 'test*.py' -v 2>&1 | tee ra030.log`; conservar `PIPESTATUS[0]`, Python y log completo. La ejecución local o independiente del nuevo HEAD **aún no está acreditada**.
