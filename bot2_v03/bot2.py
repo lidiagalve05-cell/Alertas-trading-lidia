@@ -64,6 +64,7 @@ class Ledger:
         CREATE TABLE IF NOT EXISTS events(id TEXT PRIMARY KEY, incident TEXT, kind TEXT, at TEXT, detail TEXT);
         CREATE TABLE IF NOT EXISTS outbox(event TEXT PRIMARY KEY, status TEXT DEFAULT 'PENDING',
           attempts INTEGER DEFAULT 0, next_at TEXT, last_error TEXT);
+        CREATE TABLE IF NOT EXISTS manual_reconciliations(id INTEGER PRIMARY KEY AUTOINCREMENT, event TEXT NOT NULL, actor TEXT NOT NULL, at TEXT NOT NULL, decision TEXT NOT NULL, justification TEXT NOT NULL);
         """)
     def event(self,iid,kind,now,detail=""):
         eid=hashlib.sha256(f"{iid}|{kind}|{utc(now)}|{detail}".encode()).hexdigest()[:32]
@@ -101,7 +102,12 @@ class Ledger:
                         self.db.execute("UPDATE incidents SET status='OPEN',severity=?,good_since=NULL,updated=? WHERE id=?",(severity,utc(now),iid))
                         if transition:self.event(iid,transition,now,detail)
                 elif old and old[2]!="RESOLVED":
-                    iid,_,_,_,good,_=old
+                    iid,_,_,_,good,last_checked=old
+                    # Strict cadence: a missed cycle invalidates consecutiveness.
+                    if good and now-datetime.fromisoformat(last_checked.replace("Z","+00:00"))!=FIVE:
+                        self.db.execute("UPDATE incidents SET status='OPEN',good_since=NULL,updated=? WHERE id=?",(utc(now),iid))
+                        self.event(iid,"RECOVERY_RESET",now,"missed_or_irregular_cycle")
+                        good=None
                     if not good:
                         self.db.execute("UPDATE incidents SET status='RECOVERING',good_since=?,updated=? WHERE id=?",(utc(now),utc(now),iid))
                         self.event(iid,"RECOVERING",now)
@@ -112,7 +118,7 @@ class Ledger:
                         self.event(iid,"RESOLVE",now)
     def pending(self,now=None):
         if now is None:
-            return self.db.execute("SELECT event,attempts FROM outbox WHERE status IN ('PENDING','RETRY','UNKNOWN') ORDER BY rowid").fetchall()
+            return self.db.execute("SELECT event,attempts FROM outbox WHERE status IN ('PENDING','RETRY') ORDER BY rowid").fetchall()
         return self.db.execute("SELECT event,attempts FROM outbox WHERE status IN ('PENDING','RETRY') AND (next_at IS NULL OR next_at<=?) ORDER BY rowid",(utc(now),)).fetchall()
     def delivery(self,eid,result,now):
         if result not in ("ACK","RETRY","UNKNOWN"):raise ValueError("result")
@@ -124,11 +130,12 @@ class Ledger:
             if state[0]=="UNKNOWN": raise ValueError("ambiguous_delivery_requires_manual_reconciliation")
             self.db.execute("UPDATE outbox SET status=?,attempts=attempts+1,next_at=?,last_error=? WHERE event=?",
               ("ACKED" if result=="ACK" else result,None if result=="ACK" else utc(now+timedelta(seconds=60)),None if result=="ACK" else result,eid))
-    def reconcile_unknown(self,eid,decision,now,evidence):
+    def reconcile_unknown(self,eid,decision,now,evidence,actor=""):
         """Manual audit only: confirm delivery or keep held; never auto resend."""
         utc(now)
         if decision not in ("CONFIRMED_DELIVERED","KEEP_UNKNOWN"): raise ValueError("unsupported_ambiguity_decision")
         if not isinstance(evidence,str) or not evidence.strip(): raise ValueError("reconciliation_evidence_required")
+        if not isinstance(actor,str) or not actor.strip(): raise ValueError("reconciliation_actor_required")
         with self.db:
             self.db.execute("BEGIN IMMEDIATE")
             row=self.db.execute("SELECT status FROM outbox WHERE event=?",(eid,)).fetchone()
@@ -137,7 +144,8 @@ class Ledger:
             status="ACKED" if decision=="CONFIRMED_DELIVERED" else "UNKNOWN"
             self.db.execute("UPDATE outbox SET status=?,next_at=NULL,last_error=? WHERE event=?",
                             (status,None if status=="ACKED" else "manual_review_required",eid))
-            self.event(eid,"MANUAL_RECONCILIATION",now,f"{decision}:{evidence}")
+            self.db.execute("INSERT INTO manual_reconciliations(event,actor,at,decision,justification) VALUES (?,?,?,?,?)",(eid,actor.strip(),utc(now),decision,evidence.strip()))
+            self.event(eid,"MANUAL_RECONCILIATION",now,f"{decision}:operator_statement_not_provider_proof")
     def close(self):self.db.close()
 
 class MockAdapter:
