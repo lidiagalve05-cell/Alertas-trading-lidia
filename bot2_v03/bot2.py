@@ -77,7 +77,12 @@ class Ledger:
             if key not in failures or RANK[s]>RANK[failures[key][0]]: failures[key]=(s,d)
         with self.db:
             self.db.execute("BEGIN IMMEDIATE")
-            for a,k,src in sorted(set(checked_keys)|set(failures)):
+            checked=set(checked_keys)|set(failures)
+            for iid, ikey in self.db.execute("SELECT id,ikey FROM incidents WHERE status='RECOVERING'").fetchall():
+                if tuple(json.loads(ikey)) not in checked:
+                    self.db.execute("UPDATE incidents SET status='OPEN',good_since=NULL,updated=? WHERE id=?",(utc(now),iid))
+                    self.event(iid,"RECOVERY_RESET",now,"missing_observation")
+            for a,k,src in sorted(checked):
                 key=(a,k,src); ikey=json.dumps(key,separators=(",",":"))
                 old=self.db.execute("SELECT id,episode,status,severity,good_since,updated FROM incidents WHERE ikey=? ORDER BY episode DESC LIMIT 1",(ikey,)).fetchone()
                 if old and now < datetime.fromisoformat(old[5].replace("Z","+00:00")):
@@ -116,9 +121,23 @@ class Ledger:
             state=self.db.execute("SELECT status FROM outbox WHERE event=?",(eid,)).fetchone()
             if state is None: raise KeyError("unknown_notification")
             if state[0]=="ACKED": return
-            if state[0]=="UNKNOWN" and result=="RETRY": raise ValueError("ambiguous_delivery_requires_reconciliation")
+            if state[0]=="UNKNOWN": raise ValueError("ambiguous_delivery_requires_manual_reconciliation")
             self.db.execute("UPDATE outbox SET status=?,attempts=attempts+1,next_at=?,last_error=? WHERE event=?",
               ("ACKED" if result=="ACK" else result,None if result=="ACK" else utc(now+timedelta(seconds=60)),None if result=="ACK" else result,eid))
+    def reconcile_unknown(self,eid,decision,now,evidence):
+        """Manual audit only: confirm delivery or keep held; never auto resend."""
+        utc(now)
+        if decision not in ("CONFIRMED_DELIVERED","KEEP_UNKNOWN"): raise ValueError("unsupported_ambiguity_decision")
+        if not isinstance(evidence,str) or not evidence.strip(): raise ValueError("reconciliation_evidence_required")
+        with self.db:
+            self.db.execute("BEGIN IMMEDIATE")
+            row=self.db.execute("SELECT status FROM outbox WHERE event=?",(eid,)).fetchone()
+            if row is None: raise KeyError("unknown_notification")
+            if row[0]!="UNKNOWN": raise ValueError("notification_not_ambiguous")
+            status="ACKED" if decision=="CONFIRMED_DELIVERED" else "UNKNOWN"
+            self.db.execute("UPDATE outbox SET status=?,next_at=NULL,last_error=? WHERE event=?",
+                            (status,None if status=="ACKED" else "manual_review_required",eid))
+            self.event(eid,"MANUAL_RECONCILIATION",now,f"{decision}:{evidence}")
     def close(self):self.db.close()
 
 class MockAdapter:
