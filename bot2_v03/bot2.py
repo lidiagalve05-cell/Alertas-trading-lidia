@@ -64,6 +64,7 @@ class Ledger:
             key=(a,k,src)
             if key not in failures or RANK[s]>RANK[failures[key][0]]: failures[key]=(s,d)
         with self.db:
+            self.db.execute("BEGIN IMMEDIATE")
             for a,k,src in sorted(set(checked_keys)|set(failures)):
                 key=(a,k,src); ikey=json.dumps(key,separators=(",",":"))
                 old=self.db.execute("SELECT id,episode,status,severity,good_since,updated FROM incidents WHERE ikey=? ORDER BY episode DESC LIMIT 1",(ikey,)).fetchone()
@@ -78,12 +79,12 @@ class Ledger:
                         self.db.execute("INSERT INTO incidents VALUES (?,?,?,?,?,?,?)",(iid,ikey,episode,"OPEN",severity,None,utc(now)))
                         self.event(iid,"OPEN",now,detail)
                     else:
-                        iid,_,_,prev,_=old
+                        iid,_,_,prev,_,_=old
                         transition="ESCALATE" if RANK[severity]>RANK[prev] else "DEESCALATE" if RANK[severity]<RANK[prev] else None
                         self.db.execute("UPDATE incidents SET status='OPEN',severity=?,good_since=NULL,updated=? WHERE id=?",(severity,utc(now),iid))
                         if transition:self.event(iid,transition,now,detail)
                 elif old and old[2]!="RESOLVED":
-                    iid,_,_,_,good=old
+                    iid,_,_,_,good,_=old
                     if not good:
                         self.db.execute("UPDATE incidents SET status='RECOVERING',good_since=?,updated=? WHERE id=?",(utc(now),utc(now),iid))
                         self.event(iid,"RECOVERING",now)
