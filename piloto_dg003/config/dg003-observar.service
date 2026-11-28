@@ -1,0 +1,16 @@
+[Unit]
+Description=DG-003 observador independiente
+After=network-online.target time-sync.target
+[Service]
+Type=oneshot
+User=dg003-observar
+WorkingDirectory=/opt/dg003
+EnvironmentFile=/etc/dg003/observar.env
+StateDirectory=dg003-observar
+StateDirectoryMode=0700
+ExecStart=/usr/bin/python3 -m piloto_dg003.piloto observar --inicio-utc ${INICIO_DG003} --url-piloto ${URL_DG003} --carpeta /var/lib/dg003-observar
+ExecCondition=/bin/sh -ec '/usr/bin/timedatectl show -p NTPSynchronized --value | /usr/bin/grep -qx yes'
+TimeoutStartSec=50s
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
